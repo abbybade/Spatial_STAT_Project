@@ -1,4 +1,6 @@
-# Retail Store Traffic Analysis in College Station, TX
+# TITLE: 
+
+** Retail Store Traffic Analysis in College Station, TX** 
 Project Overvie: 
 
 This project analyzes retail store traffic patterns in College Station, Texas using demographic data, geospatial analysis, and Bayesian modeling techniques.
