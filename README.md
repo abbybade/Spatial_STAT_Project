@@ -1,5 +1,3 @@
-# Spatial_STAT_Project
-
 # Retail Store Traffic Analysis in College Station, TX
 Project Overvie: 
 
