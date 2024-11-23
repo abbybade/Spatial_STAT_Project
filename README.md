@@ -4,8 +4,8 @@
 Project Overvie: This part og project analyzes retail store traffic patterns in College Station, Texas using demographic data, geospatial analysis, and Bayesian modeling techniques.
 
 File Structure:
-
 Data_Cleaner_Final.Rmd: Main script for data preparation and analysis
+bsim_Traffic_Estimate.Rmd :Traffic Estimation Model
 
 Data Sources
 - TIGER/Line shapefile for census tracts
