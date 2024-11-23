@@ -1,0 +1,267 @@
+---
+title: "Data_Cleaner"
+output: html_document
+date: "`r Sys.Date()`"
+---
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load necessary libraries
+library(tidygeocoder)
+library(dplyr)      # For data manipulation
+library(sf)         # For handling spatial data
+library(ggplot2)    # For visualization
+library(tidycensus)
+library(tidyr)
+library(viridis)  # For color scale
+library(units)    # For handling units
+library(patchwork) # For combining plots
+library(leaflet)
+library(truncnorm)
+library(geosphere)
+
+census_api_key("your api key")
+```
+
+# Data Collection and Preparation:
+
+- TIGER/Line shapefile
+- Demographic Data (Population, Median Income, Education Level)
+- Merge TIGER/Line and Demographic Data
+- Filter for College station Tracts data 
+
+
+```{r}
+
+# Load TIGER/Line Shapefile
+shapefile_data <- st_read("tl_2024_48_tract")
+#View(shapefile_data)
+
+# Fetch ACS Data
+acs_vars <- c(
+  "Median_Income" = "B19013_001",  # Median Household Income
+  "Education_Level" = "B15003_022", # Bachelor's Degree or Higher
+  "Population" = "B01003_001"      # Total Population
+)
+
+acs_data <- get_acs(
+  geography = "tract",
+  state = "TX",
+  variables = acs_vars,
+  year = 2022,  # ACS 5-Year Estimates
+  geometry = FALSE
+)
+#View(acs_data)
+# Pivot ACS data to a wide format
+acs_data_wide <- acs_data %>%
+  pivot_wider(names_from = variable, values_from = c(estimate, moe)) %>%
+  rename(
+    GEOID = GEOID,
+    Median_Income = estimate_Median_Income,
+    MOE_Income = moe_Median_Income,
+    Education_Level = estimate_Education_Level,
+    Population = estimate_Population
+  )
+#View(acs_data_wide)
+#write.csv(acs_data_wide, "CS_ACS_Data.csv", row.names = FALSE)
+#View(acs_data_wide)
+
+
+#Merge demographic data with tract data
+final_data<- left_join(shapefile_data, acs_data_wide, by = "GEOID")
+#View(final_data)
+
+#write.csv(final_data, "ACS_TractsTX.csv", row.names= FALSE)
+
+# Filter College Station Data 
+college_station_data <- final_data %>%
+  mutate(
+    INTPTLAT = as.numeric(INTPTLAT),
+    INTPTLON = as.numeric(INTPTLON)
+  ) %>%
+  filter(between(INTPTLAT, 30.5, 30.7) & between(INTPTLON, -96.4, -96.2))
+#View(college_station_data)
+
+#write.csv(college_station_data, "CS_Tracts_data.csv", row.names = FALSE)
+
+```
+
+
+# Data Visualization:
+
+```{r}
+# Plotting the census tracts
+ggplot(data = college_station_data) +
+  geom_sf(fill = "lightblue", color = "black") +  # Fill color for tracts
+  labs(title = "Census Tracts in College Station",
+       caption = "Source: Your Shapefile Data") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, hjust = 0.5),
+    axis.text = element_blank(),  # Remove axis text for better aesthetics
+    axis.ticks = element_blank(),  # Remove axis ticks
+    axis.title = element_blank()     # Remove axis titles
+  )
+
+```
+
+```{r}
+# Calculate Population Density
+college_station_data <- college_station_data %>%
+  mutate(
+    Area_km2 = st_area(.) / 1e6,  # Convert area to square kilometers
+    Population_Density = Population / drop_units(Area_km2)  # Calculate population density
+  )
+
+# Check for zero or negative values in population density (to avoid log error)
+college_station_data <- college_station_data %>%
+  mutate(
+    Population_Density = ifelse(Population_Density <= 0, NA, Population_Density)  # Replace 0/negative densities with NA
+  )
+
+# Create a function to generate plots with vertical legend underneath
+create_plot <- function(data, fill_var, title, fill_name, option, trans_method = "identity") {
+  ggplot(data = data) +
+    geom_sf(aes(fill = {{fill_var}}), color = "black", size = 0.1) +
+    scale_fill_viridis_c(
+      option = option, 
+      name = fill_name,
+      trans = trans_method
+    ) +
+    theme_minimal(base_size = 8) +
+    labs(title = title, x = NULL, y = NULL) +
+    theme(
+      legend.position = "bottom",
+      legend.direction = "vertical",
+      legend.box = "vertical",
+      legend.key.width = unit(0.5, "cm"),
+      legend.key.height = unit(0.8, "cm"),
+      legend.title = element_text(size = 7),
+      legend.text = element_text(size = 6),
+      plot.title = element_text(size = 10, hjust = 0.5),
+      axis.text = element_text(size = 6),
+      plot.margin = margin(5, 5, 20, 5)  
+    )
+}
+
+# Create the Choropleth Map for Population Density
+population_density_map <- create_plot(
+  data = college_station_data,
+  fill_var = Population_Density,
+  title = "Population Density",
+  fill_name = "Population Density",
+  option = "C",
+  trans_method = "log"  # Use log scale for population density
+)
+
+# Create the Choropleth Map for Education Level
+education_level_map <- create_plot(
+  data = college_station_data,
+  fill_var = Education_Level,
+  title = "Educational Level",
+  fill_name = "Education Level (%)",
+  option = "D"
+)
+
+# Create the Choropleth Map for Median Income
+median_income_map <- create_plot(
+  data = college_station_data,
+  fill_var = Median_Income,
+  title = "Median Household Income",
+  fill_name = "Median Income ($)",
+  option = "C",
+  trans_method = "log"   # Use log scale for median income
+)
+
+# Combine the plots into a single layout using patchwork
+combined_plot <- (population_density_map | education_level_map | median_income_map) + 
+                 plot_layout(ncol=3)
+
+# Print the combined plot
+print(combined_plot)
+```
+
+Retail Store Data Processing:
+
+```{r}
+#Read all CSV files
+csv_files <- list.files(path = "Retail_Stores", pattern = "Next_15_Retail_Stores_Set_.*_Coordinates\\.csv", full.names = TRUE)
+
+# Read and combine all CSV files
+combined_data <- csv_files %>%
+  lapply(read.csv) %>%   
+  bind_rows()
+# Filter unique stores based on Latitude and Longitude
+unique_stores <- combined_data %>%
+  distinct(Latitude, Longitude, .keep_all = TRUE)
+# Rename Store.Name column
+unique_stores <- unique_stores %>%
+  rename(Store_name = Store.Name )
+
+#write.csv(unique_stores, "unique_stores.csv", row.names = FALSE)
+```
+
+
+## Data Visualization:Hitmap for Retial store 
+
+
+```{r}
+# Define the bounding box for College Station
+college_station_bbox <- list(
+  xmin = -96.4, xmax = -96.2,
+  ymin = 30.5, ymax = 30.7
+)
+
+# Filter unique stores within the College Station bounding box
+unique_stores_cs <- unique_stores %>%
+  filter(
+    Longitude >= college_station_bbox$xmin & Longitude <= college_station_bbox$xmax,
+    Latitude >= college_station_bbox$ymin & Latitude <= college_station_bbox$ymax
+  )
+#View(unique_stores_cs)
+colnames(unique_stores_cs)
+
+# Create an interactive map
+leaflet(data = unique_stores_cs) %>%
+  addTiles() %>%  # Add default OpenStreetMap tiles
+  addCircleMarkers(
+    lng = ~Longitude,
+    lat = ~Latitude,
+    radius = 1,
+    color = "blue",
+    fill = TRUE,
+    fillOpacity = 0.9,
+    popup = ~paste("Store Name:", Store_name)  # Add popups with store names
+    ) %>%
+  setView(lng = mean(unique_stores_cs$Longitude), lat = mean(unique_stores_cs$Latitude), zoom = 13)
+
+
+```
+
+
+```{r}
+# Convert retail store data to sf object using coordinates
+retail_sf <- st_as_sf(unique_stores_cs, coords = c("Longitude", "Latitude"), crs = 4326)
+
+# Transform college station data to match the CRS of retail stores if needed
+college_station_data <- st_transform(college_station_data, crs = st_crs(retail_sf))
+
+# Perform a spatial join to find which census tract each retail store falls into
+Store_Demographic <- st_join(retail_sf, college_station_data, join = st_within)
+
+# Identify rows with missing values in key columns
+missing_rows <- Store_Demographic %>%
+  filter(is.na(Population) | is.na(Education_Level) | is.na(Median_Income) | is.na(Population_Density))
+
+# Remove rows with any missing values in relevant columns
+Final_data <- Store_Demographic %>%
+  filter(!is.na(Population) & 
+         !is.na(Education_Level) & 
+         !is.na(Median_Income) & 
+         !is.na(Population_Density))
+
+#View(Final_data)
+#write.csv(cleaned_Store_Demographic, "cleaned_Store_Demographic.csv", row.names = FALSE)
+```
+

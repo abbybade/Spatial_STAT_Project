@@ -1,0 +1,90 @@
+---
+title: "bsim"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+``` {r, child="Data_Cleaner_Final.Rmd"} 
+# Source the Data_Cleaner script to prepare the data
+# Load necessary libraries
+library(brms)
+library(ggplot2)
+library(sf)  # Ensure sf is loaded for spatial data handling
+
+```
+
+
+# Traffic Data Estimate based on Socio-Economic Factors
+
+```{r}
+# Generate simpler synthetic data with linear relationships
+set.seed(42)  # for reproducibility
+
+# Define coefficients for our synthetic model
+beta_population <- 0.1
+beta_education <- 5
+beta_income <- 0.001
+beta_density <- -0.05
+
+# Generate synthetic traffic data with linear relationships and some noise
+Final_data$Traffic <- with(Final_data, {
+  base <- 500 + 
+    beta_population * Population + 
+    beta_education * Education_Level + 
+    beta_income * Median_Income + 
+    beta_density * Population_Density
+  
+  # Add noise
+  traffic <- base + rnorm(nrow(Final_data), mean = 0, sd = 200)
+  
+  # Ensure non-negative values
+  pmax(traffic, 0)
+})
+
+# Fit a simple linear Bayesian model
+model <- brm(
+  Traffic ~ Population + Education_Level + Median_Income + Population_Density,
+  data = Final_data,
+  family = gaussian(),
+  iter = 2000,
+  warmup = 1000,
+  chains = 4
+)
+
+# Generate Predictions
+Final_data$Predicted_Traffic <- predict(model)[, "Estimate"]
+
+# Final Data with geospatial information and predictions
+print(Final_data[, c("Store_name", "Traffic", "Predicted_Traffic", "geometry")])
+```
+
+
+## Model Evaluation:
+
+```{r}
+# Calculate Mean Squared Error (MSE)
+mse <- mean((Final_data$Traffic - Final_data$Predicted_Traffic)^2)
+print(paste("Mean Squared Error (MSE):", mse))
+
+# Calculate Mean Absolute Error (MAE)
+mae <- mean(abs(Final_data$Traffic - Final_data$Predicted_Traffic))
+print(paste("Mean Absolute Error (MAE):", mae))
+
+# Calculate R-squared
+ss_res <- sum((Final_data$Traffic - Final_data$Predicted_Traffic)^2)
+ss_tot <- sum((Final_data$Traffic - mean(Final_data$Traffic))^2)
+r_squared <- 1 - (ss_res / ss_tot)
+print(paste("R-squared:", r_squared))
+```
+
+```{r}
+# Visualize Results
+ggplot(Final_data, aes(x = Predicted_Traffic, y = Traffic)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(title = "Predicted vs Actual Traffic",
+       x = "Predicted Traffic",
+       y = "Actual Traffic") +
+  theme_minimal()
+```
+
