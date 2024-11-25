@@ -1,0 +1,198 @@
+---
+title: "Traffic_Estimate_Truncation_Model"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r, child="Data_Cleaner_Final.Rmd"} 
+# Source the Data_Cleaner script to prepare the data
+
+# Load necessary libraries
+#-------------------------------------------------------------
+library(brms)
+library(sf)          # For spatial data handling
+library(dplyr)       # For data manipulation
+library(ggplot2)     # For visualization
+library(truncnorm)   # For truncated normal distribution
+library(geosphere)   # For distance calculations
+
+```
+
+
+```{r}
+#-------------------------------------------------------------
+# 1. Prepare and Clean the Data
+#-------------------------------------------------------------
+# Clean tract data
+tract_data <- tract_data %>%
+  filter(
+    !is.na(Population),
+    !is.na(Education_Level),
+    !is.na(Median_Income),
+    !is.na(Population_Density),
+    !is.na(INTPTLAT),
+    !is.na(INTPTLON)
+  ) %>%
+  mutate(
+    INTPTLAT = as.numeric(INTPTLAT),
+    INTPTLON = as.numeric(INTPTLON)
+  )
+
+# Clean retail data
+retail_data <- retail_data %>%
+  filter(!is.na(Latitude), !is.na(Longitude)) %>%
+  mutate(
+    Latitude = as.numeric(Latitude),
+    Longitude = as.numeric(Longitude)
+  )
+
+#-------------------------------------------------------------
+# 2. Convert Data Frames to Spatial Objects
+#-------------------------------------------------------------
+
+# Convert retail data to spatial object
+retail_sf <- st_as_sf(retail_data, coords = c("Longitude", "Latitude"), crs = 4326)
+
+# Convert tract data to spatial object (using tract centroids)
+tract_sf <- st_as_sf(tract_data, coords = c("INTPTLON", "INTPTLAT"), crs = 4326)
+
+#-------------------------------------------------------------
+# 3. Calculate the Distance Matrix
+#-------------------------------------------------------------
+
+# Extract coordinates
+store_coords <- st_coordinates(retail_sf)
+tract_coords <- st_coordinates(tract_sf)
+
+# Calculate distance matrix (in meters) using Haversine formula
+distance_matrix <- distm(store_coords, tract_coords, fun = distHaversine)
+
+#-------------------------------------------------------------
+# 4. Calculate Inverse Distance Weights
+#-------------------------------------------------------------
+
+# Add 1 meter to distances to avoid division by zero
+inverse_distances <- 1 / (distance_matrix + 1)
+
+# Normalize weights so that the sum of weights for each store is 1
+normalized_weights <- inverse_distances / rowSums(inverse_distances)
+
+#-------------------------------------------------------------
+# 5. Aggregate Socio-Demographic Variables
+#-------------------------------------------------------------
+
+# Extract socio-demographic variables as a matrix
+socio_vars <- tract_data %>%
+  select(Population, Education_Level, Median_Income, Population_Density)
+
+socio_vars_matrix <- as.matrix(socio_vars)
+
+# Compute weighted averages for each store
+weighted_population <- normalized_weights %*% socio_vars_matrix[, "Population"]
+weighted_education <- normalized_weights %*% socio_vars_matrix[, "Education_Level"]
+weighted_income <- normalized_weights %*% socio_vars_matrix[, "Median_Income"]
+weighted_density <- normalized_weights %*% socio_vars_matrix[, "Population_Density"]
+
+#-------------------------------------------------------------
+# 6. Create the Final Data Frame for Modeling
+#-------------------------------------------------------------
+
+# Create a data frame with the weighted variables
+model_data <- data.frame(
+  Store_name = retail_data$Store_name,
+  Address = retail_data$Address,
+  Latitude = retail_data$Latitude,
+  Longitude = retail_data$Longitude,
+  Weighted_Population = as.numeric(weighted_population),
+  Weighted_Education_Level = as.numeric(weighted_education),
+  Weighted_Median_Income = as.numeric(weighted_income),
+  Weighted_Population_Density = as.numeric(weighted_density)
+)
+
+#-------------------------------------------------------------
+# 7. Calculate Mean Utility for Each Store
+#-------------------------------------------------------------
+
+# Define adjusted beta coefficients for more realistic traffic estimation
+beta_0 <- 10                 # intercept
+beta_population <- 0.002       
+beta_education <- 0.5         #
+beta_income <- 0.0001         
+beta_density <- -0.02         
+
+
+#  mean utility for each store using adjusted beta coefficients
+model_data <- model_data %>%
+  mutate(
+    Mean_Utility = beta_0 +
+      beta_population * Weighted_Population +
+      beta_education * Weighted_Education_Level +
+      beta_income * Weighted_Median_Income +
+      beta_density * Weighted_Population_Density
+  )
+
+#-------------------------------------------------------------
+# 8. Estimate Customer Traffic Using Truncated Normal Distribution
+#-------------------------------------------------------------
+
+# Assume a standard deviation of residuals based on variable distributions
+# Assume a lower standard deviation for residuals
+sigma_residuals <- 50  # lower the variability
+
+# Define truncation limits
+a <- 0        # Lower limit (traffic cannot be negative)
+b <- Inf      # Upper limit
+
+# Function to compute expected value of truncated normal distribution
+compute_expected_traffic <- function(mu, sigma) {
+  z <- (a - mu) / sigma
+  expected_value <- mu + (dnorm(z) / (1 - pnorm(z))) * sigma
+  return(expected_value)
+}
+
+# Compute estimated traffic for each store
+model_data <- model_data %>%
+  rowwise() %>%
+  mutate(
+    Estimated_Traffic = compute_expected_traffic(Mean_Utility, sigma_residuals)
+  ) %>%
+  ungroup()
+
+#-------------------------------------------------------------
+# 9. Visualize the Estimated Traffic
+#-------------------------------------------------------------
+
+# Histogram of Estimated Traffic
+# Histogram of Adjusted Estimated Traffic
+ggplot(model_data, aes(x = Estimated_Traffic)) +
+  geom_histogram(binwidth = 100, fill = "skyblue", color = "black", alpha = 0.7) +
+  labs(title = "Adjusted Distribution of Estimated Customer Traffic",
+       x = "Estimated Traffic",
+       y = "Frequency") +
+  theme_minimal()
+
+# View summary statistics to evaluate the distribution of the estimates
+summary_stats <- model_data %>%
+  summarise(
+    Estimated_Traffic_Mean = mean(Estimated_Traffic),
+    Estimated_Traffic_SD = sd(Estimated_Traffic)
+  )
+
+print("Adjusted Summary Statistics:")
+print(summary_stats)
+
+
+
+
+# Save the results to a CSV file
+#write.csv(model_data, "estimated_customer_traffic.csv", row.names = FALSE)
+
+#-------------------------------------------------------------
+# End of Script
+#-------------------------------------------------------------
+```
+
+
+
+
+
