@@ -1,0 +1,206 @@
+---
+title: "Sarah: Spatial Statistics Project Models"
+output: html_document
+date: "2024-11-24"
+---
+
+# Preprocessing
+
+### Load Libraries
+```{r, message=FALSE, warning=FALSE}
+library(sp)
+library(sf)
+library(rstan)
+library(rstanarm)
+library(spdep)
+library(dplyr)
+library(spatialreg)
+library(ggplot2)
+```
+
+### Import datasets
+```{r, message=FALSE, warning=FALSE}
+unique_stores <- read.csv("https://raw.githubusercontent.com/sarahvastani/newrepo/refs/heads/main/unique_stores.csv")
+Traffic_estimate_Socio_econ <- read.csv("https://raw.githubusercontent.com/sarahvastani/newrepo/refs/heads/main/Traffic_estimate_Socio_econ.csv")
+cleaned_Store_Demographic <- read.csv("https://raw.githubusercontent.com/sarahvastani/newrepo/refs/heads/main/cleaned_Store_Demographic_new.csv")
+expected_customer_traffic_withProxmity <- read.csv("https://raw.githubusercontent.com/sarahvastani/newrepo/refs/heads/main/expected_customer_traffic_withProxmity.csv")
+```
+
+### Merge datasets
+```{r, message=FALSE, warning=FALSE}
+merged_data <- merge(cleaned_Store_Demographic, unique_stores, by = "Store_name", all = FALSE)
+merged_data_2 <- merge(expected_customer_traffic_withProxmity, Traffic_estimate_Socio_econ, by = "StoreID", all = FALSE)
+merged_data_2 <- merged_data_2 %>%
+  rename(Store_name = StoreID)
+merged_data_combined <- merge(merged_data, merged_data_2, by = "Store_name")
+```
+
+### Aggregate Data
+```{r, message=FALSE, warning=FALSE}
+aggregated_data <- merged_data_combined %>%
+  group_by(Store_name, Latitude, Longitude) %>%
+  summarise(
+    Utility_Socio = mean(Utility_Socio, na.rm = TRUE),
+    Utility_Traffic = mean(Utility_Traffic, na.rm = TRUE),
+    Distance = mean(Distance, na.rm = TRUE),
+    Estimated_Traffic = mean(Estimated_Traffic, na.rm = TRUE),
+    Mean_Utility = mean(Mean_Utility, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+### Convert to sf object
+```{r, message=FALSE, warning=FALSE}
+spatial_data <- st_as_sf(aggregated_data, coords = c("Longitude", "Latitude"), crs = 4326)
+
+```
+
+### Create spatial neighbors based on the distance between points
+```{r, message=FALSE, warning=FALSE}
+coords <- st_coordinates(spatial_data)  
+neighbors <- dnearneigh(coords, d1 = 0, d2 = 1)  
+```
+
+### Create a spatial weights matrix from the neighbors
+```{r, message=FALSE, warning=FALSE}
+weights <- nb2listw(neighbors, style = "W")
+```
+
+### Standardizing predictors
+```{r, message=FALSE, warning=FALSE}
+spatial_data$Latitude <- st_coordinates(spatial_data)[,2]
+spatial_data$Longitude <- st_coordinates(spatial_data)[,1]
+spatial_data$Estimated_Traffic <- scale(spatial_data$Estimated_Traffic)
+spatial_data$Latitude <- scale(spatial_data$Latitude)
+spatial_data$Longitude <- scale(spatial_data$Longitude)
+spatial_data$Utility_Socio <- scale(spatial_data$Utility_Socio)
+spatial_data$Utility_Traffic <- scale(spatial_data$Utility_Traffic)
+spatial_data$Distance <- scale(spatial_data$Distance)
+spatial_data$Mean_Utility <- scale(spatial_data$Mean_Utility)
+```
+
+# MODEL 1
+
+### Run a Bayesian spatial model using rstanarm
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+model_bayesian <- stan_glm(
+  Estimated_Traffic ~ Latitude + Longitude + Utility_Socio + Utility_Traffic + Distance + Mean_Utility,
+  data = spatial_data,
+  family = gaussian(),
+  prior = normal(0, 5), 
+  chains = 4,
+  cores = 4, 
+  iter = 2000,
+  warmup = 1000
+)
+
+```
+
+### Check model summary
+```{r, message=FALSE, warning=FALSE}
+summary(model_bayesian)
+```
+
+### Posterior samples plot
+```{r, message=FALSE, warning=FALSE}
+plot(model_bayesian)
+```
+
+### Compute Mean Squared Error (MSE) 
+```{r, message=FALSE, warning=FALSE}
+predicted_values <- predict(model_bayesian, type = "response")
+actual_values <- spatial_data$Estimated_Traffic
+mse <- mean((predicted_values - actual_values)^2)
+cat("MSE: ", mse, "\n")
+```
+
+### Compute R-squared
+```{r, message=FALSE, warning=FALSE}
+sst <- sum((actual_values - mean(actual_values))^2)
+sse <- sum((actual_values - predicted_values)^2)
+r_squared <- 1 - (sse / sst)
+cat("R²: ", r_squared, "\n")
+```
+### Plot Actual vs. Predicted Traffic
+```{r, message=FALSE, warning=FALSE}
+comparison_table_bayesian <- data.frame(
+  Predicted_Traffic = predicted_values,
+  Actual_Traffic = actual_values
+)
+
+plot_bayesian <- ggplot(comparison_table_bayesian, aes(x = Predicted_Traffic, y = Actual_Traffic)) +
+  geom_point(color = "blue", alpha = 0.6) +
+  geom_smooth(method = "lm", color = "red", se = FALSE, linetype = "dashed") +
+  labs(
+    title = "Bayesian Model: Actual vs. Predicted Traffic",
+    subtitle = paste("MSE:", round(mse, 3), "| R²:", round(r_squared, 3)),
+    x = "Predicted Traffic",
+    y = "Actual Traffic"
+  ) +
+  theme_minimal()
+
+print(plot_bayesian)
+```
+
+# MODEL 2
+
+### Fit a spatial lag model using the spatial weights matrix with adjusted tol.solve and method
+```{r, message=FALSE, warning=FALSE}
+model_gaussian <- lagsarlm(
+  Estimated_Traffic ~ Latitude + Longitude + Utility_Socio + Utility_Traffic + Distance + Mean_Utility,
+  data = spatial_data,
+  listw = weights,
+  tol.solve = 1e-12,  
+  method = "Matrix"   
+)
+```
+
+### Check model summary
+```{r, message=FALSE, warning=FALSE}
+summary(model_bayesian)
+```
+
+### Posterior samples plot
+```{r, message=FALSE, warning=FALSE}
+plot(model_bayesian)
+```
+
+### Compute Mean Squared Error (MSE) 
+```{r, message=FALSE, warning=FALSE}
+predicted_values_gaussian <- predict(model_gaussian, newdata = spatial_data, listw = weights)
+actual_values <- spatial_data$Estimated_Traffic
+mse_gaussian <- mean((predicted_values_gaussian - actual_values)^2)
+cat("MSE: ", mse_gaussian, "\n")
+```
+
+### Compute R-squared
+```{r, message=FALSE, warning=FALSE}
+sst_gaussian <- sum((actual_values - mean(actual_values))^2)
+sse_gaussian <- sum((actual_values - predicted_values_gaussian)^2)
+r_squared_gaussian <- 1 - (sse_gaussian / sst_gaussian)
+cat("R²: ", r_squared_gaussian, "\n")
+```
+
+### Plot Actual vs. Predicted Traffic
+```{r, message=FALSE, warning=FALSE}
+comparison_table_gaussian <- data.frame(
+  Predicted_Traffic = as.numeric(predicted_values_gaussian),
+  Actual_Traffic = as.numeric(actual_values)
+)
+
+plot_gaussian <- ggplot(comparison_table_gaussian, aes(x = Predicted_Traffic, y = Actual_Traffic)) +
+  geom_point(color = "green", alpha = 0.6) +
+  geom_smooth(method = "lm", color = "orange", se = FALSE, linetype = "dashed") +
+  labs(
+    title = "Gaussian Model: Actual vs. Predicted Traffic",
+    subtitle = paste("MSE:", round(mse_gaussian, 3), "| R²:", round(r_squared_gaussian, 3)),
+    x = "Predicted Traffic",
+    y = "Actual Traffic"
+  ) +
+  theme_minimal()
+
+print(plot_gaussian)
+```
+
+
